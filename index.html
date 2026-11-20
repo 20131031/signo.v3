@@ -985,10 +985,13 @@ ${levelGuide}
                 document.getElementById(loadingId)?.remove();
                 conversationHistory.pop();
 
-                if (!PROXY_ENDPOINT && window.location.hostname.includes('github.io')) {
-                    showToast('깃허브 페이지에서는 중계 서버(PROXY_ENDPOINT) 없이는 API 키 없이 호출할 수 없습니다.', 'error');
+                const errMsg = error?.message || '';
+                if (errMsg.includes('500')) {
+                    showToast('Cloudflare 서버에 GEMINI_API_KEY가 등록되지 않았습니다.', 'error');
+                } else if (errMsg.includes('400') || errMsg.includes('403')) {
+                    showToast('API 키가 올바르지 않습니다. Cloudflare의 GEMINI_API_KEY(AIza...)를 확인해 주세요.', 'error');
                 } else {
-                    showToast('풀이 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.', 'error');
+                    showToast(`오류가 발생했습니다 (${errMsg || '연결 실패'}). 잠시 후 다시 시도해 주세요.`, 'error');
                 }
             } finally {
                 isGenerating = false;
@@ -999,8 +1002,8 @@ ${levelGuide}
 
         async function callGeminiWithRetry(contents, maxRetries = 3) {
             const baseUrl = PROXY_ENDPOINT
-                ? `${PROXY_ENDPOINT.replace(/\/+$/, '')}/v1beta/models/gemini-3-flash-preview:generateContent`
-                : `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+                ? `${PROXY_ENDPOINT.replace(/\/+$/, '')}/v1beta/models/gemini-2.5-flash:generateContent`
+                : `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
 
             const payload = {
                 contents: contents,
@@ -1019,7 +1022,7 @@ ${levelGuide}
                     });
 
                     if (!response.ok) {
-                        throw new Error(`HTTP error ${response.status}`);
+                        throw new Error(`HTTP ${response.status}`);
                     }
 
                     const result = await response.json();
