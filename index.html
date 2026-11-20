@@ -9,19 +9,18 @@
     <!-- Google Fonts: Inter & Noto Sans KR -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
     <!-- KaTeX for Math Rendering -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-    <!-- Marked.js for Markdown Rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+    <!-- Marked.js for Markdown Parsing -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
-
     <style>
         body {
-            font-family: 'Inter', 'Noto Sans KR', sans-serif;
+            font-family: 'Inter', 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
         }
         ::-webkit-scrollbar {
             width: 6px;
@@ -278,8 +277,6 @@
 
         // Storage Keys & App State
         const STORAGE_KEY = 'signo_local_sessions_v1';
-        // 배포한 Cloudflare Worker 중계 서버 주소를 넣으세요. (예: "https://signo-proxy.<내계정>.workers.dev")
-        // 주소를 넣으면 깃허브 페이지에서도 사용자가 API 키를 입력할 필요 없이 바로 작동합니다.
         const PROXY_ENDPOINT = "https://signo-proxy.yxuxeung.workers.dev";
         const apiKey = "";
 
@@ -989,7 +986,7 @@ ${levelGuide}
                 if (errMsg.includes('500')) {
                     showToast('Cloudflare 서버에 GEMINI_API_KEY가 등록되지 않았습니다.', 'error');
                 } else if (errMsg.includes('400') || errMsg.includes('403')) {
-                    showToast('API 키가 올바르지 않습니다. Cloudflare의 GEMINI_API_KEY(AIza...)를 확인해 주세요.', 'error');
+                    showToast('API 키가 올바르지 않습니다. Cloudflare의 GEMINI_API_KEY를 확인해 주세요.', 'error');
                 } else {
                     showToast(`오류가 발생했습니다 (${errMsg || '연결 실패'}). 잠시 후 다시 시도해 주세요.`, 'error');
                 }
@@ -1000,10 +997,16 @@ ${levelGuide}
             }
         });
 
-        async function callGeminiWithRetry(contents, maxRetries = 3) {
-            const baseUrl = PROXY_ENDPOINT
-                ? `${PROXY_ENDPOINT.replace(/\/+$/, '')}/v1beta/models/gemini-2.5-flash:generateContent`
-                : `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+        async function callGeminiWithRetry(contents, maxRetries = 2) {
+            const candidateModels = [
+                'gemini-3.5-flash-lite',
+                'gemini-3.8-flash',
+                'gemini-3.1-flash-lite',
+                'gemini-4-argon',
+                'gemini-3-flash-preview',
+                'gemini-2.5-flash-lite',
+                'gemini-2.5-flash'
+            ];
 
             const payload = {
                 contents: contents,
@@ -1012,35 +1015,56 @@ ${levelGuide}
                 }
             };
 
-            let delay = 1000;
-            for (let attempt = 0; attempt <= maxRetries; attempt++) {
-                try {
-                    const response = await fetch(baseUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
+            let lastError = null;
 
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}`);
+            for (const modelName of candidateModels) {
+                const baseUrl = PROXY_ENDPOINT
+                    ? `${PROXY_ENDPOINT.replace(/\/+$/, '')}/v1beta/models/${modelName}:generateContent`
+                    : `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+
+                let delay = 800;
+                for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                    try {
+                        const response = await fetch(baseUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+
+                        if (!response.ok) {
+                            let detail = '';
+                            try {
+                                const errJson = await response.json();
+                                detail = errJson?.error?.message || errJson?.error || '';
+                            } catch (_) {}
+
+                            if (response.status === 404) {
+                                lastError = new Error(`HTTP 404 (${modelName}): ${detail}`);
+                                break;
+                            }
+                            throw new Error(`HTTP ${response.status} (${modelName})${detail ? ': ' + detail : ''}`);
+                        }
+
+                        const result = await response.json();
+                        const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                        if (!text) {
+                            throw new Error('Empty response from model');
+                        }
+
+                        return text;
+                    } catch (err) {
+                        lastError = err;
+                        if (attempt === maxRetries) {
+                            break;
+                        }
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        delay *= 2;
                     }
-
-                    const result = await response.json();
-                    const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-
-                    if (!text) {
-                        throw new Error('Empty response from model');
-                    }
-
-                    return text;
-                } catch (err) {
-                    if (attempt === maxRetries) {
-                        throw err;
-                    }
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    delay *= 2;
                 }
             }
+
+            throw lastError || new Error('All models failed');
         }
 
         function scrollToBottom() {
